@@ -1,14 +1,32 @@
 """
 =============================================================
-High-Dimensional Clustering: Core + Experiment 1 (Fixed)
-Optimized Analytics Step Size + Safe Beta Values
+High-Dimensional Clustering: Gravitational Algorithm
+Optimized Analytical Step Size + Adaptive Beta
 =============================================================
+
+Objective function minimised by the algorithm
+----------------------------------------------
+  F(X) = Σᵢ ‖xᵢ − yᵢ‖²  +  (2M/n) Σᵢ≠ⱼ ‖xᵢ − xⱼ‖² exp(−β/2 ‖xᵢ − xⱼ‖²)
+
+The gravitational interaction kernel w(t) = e^{−t}(1 − t), t = β/2 ‖xᵢ−xⱼ‖²:
+  • t < 1  (d < √(2/β)) :  w > 0  →  attractive force  (intra-cluster pull)
+  • t > 1  (d > √(2/β)) :  w < 0  →  repulsive force   (inter-cluster push)
+
+This creates natural separation at the length scale √(2/β).
+
+Lipschitz-based step size
+-------------------------
+  ‖∂²F/∂xᵢ²‖ ≤ 2 + (4M/n) · n · max|w(t)| = 2 + 4M
+  ⟹  lr = 1 / (2 + 4M)  guarantees gradient-descent stability per coordinate.
 """
 
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.cluster import DBSCAN
+import matplotlib.cm as cm
+from itertools import permutations
+from sklearn.cluster import DBSCAN, KMeans
+from scipy.spatial import cKDTree
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -38,27 +56,49 @@ plt.rcParams.update({
 })
 
 # -----------------------------------------------------------
-# Core Engine (Ultra-Fast with Analytical Step Size)
+# Core Engine (Analytical Step Size)
 # -----------------------------------------------------------
 
 def gradient_i(Y, X, i, M, beta):
+    """
+    Coordinate gradient of F w.r.t. xᵢ.
+
+    Parameters
+    ----------
+    beta : float  – global bandwidth (scalar)
+         | ndarray of shape (n,)  – per-point bandwidths; the symmetric
+           pair value β_ij = √(βᵢ · βⱼ) is computed on the fly.
+         | ndarray of shape (n, n) – precomputed symmetric matrix; row i
+           is used directly.
+    """
     n = len(Y)
-    diff = X[i] - X
-    d2 = np.einsum("ij,ij->i", diff, diff)
-    
-    # Weight computation
-    w = np.exp(-0.5 * beta * d2) * (1.0 - 0.5 * beta * d2)
-    w[i] = 0.0  
-    
-    grad_fidelity = 2.0 * (X[i] - Y[i])
+    diff = X[i] - X                                 # shape (n, d)
+    d2   = np.einsum("ij,ij->i", diff, diff)        # ‖xᵢ − xⱼ‖²
+
+    if isinstance(beta, np.ndarray):
+        if beta.ndim == 2:
+            b = beta[i]                              # precomputed row (n,)
+        else:
+            b = np.sqrt(beta[i] * beta)              # geometric mean (n,)
+    else:
+        b = beta                                     # scalar broadcast
+
+    w = np.exp(-0.5 * b * d2) * (1.0 - 0.5 * b * d2)
+    w[i] = 0.0
+
+    grad_fidelity    = 2.0 * (X[i] - Y[i])
     grad_gravitation = (4.0 * M / n) * np.sum(w[:, None] * diff, axis=0)
     return grad_fidelity + grad_gravitation
 
 def greedy_coordinate_descent(Y, M, beta, n_iter=30, max_inner_iter=2, seed=None):
     """
-    Optimized greedy coordinate descent.
-    Uses theoretical Lipschitz bound for step size: lr = 1 / (2 + 4M).
-    No line search needed!
+    Greedy coordinate descent on F(X).
+
+    Step size lr = 1 / (2 + 4M) is derived from the Lipschitz constant
+    of ∇_xᵢ F: the fidelity term contributes L_fid = 2, and the
+    gravitational term contributes at most 4M (since |w(t)| ≤ 1 for all
+    t ≥ 0 and there are n − 1 neighbours scaled by 4M/n).  No line search
+    is needed.
     """
     rng = np.random.default_rng(seed)
     n, d = Y.shape
@@ -169,6 +209,7 @@ for idx, beta in enumerate(betas_to_test):
 
 ax2.set_title("Dependence on Dimensionality $d$ (fixed $n=40$)")
 ax2.set_xlabel("Dimensionality $d$")
+ax2.set_ylabel("Minimal $M$ for single cluster")
 ax2.grid(True)
 ax2.legend()
 
@@ -178,32 +219,26 @@ print("Experiment 1 complete! Graph saved to outputs/exp1_calibration.png")
 
 """
 =============================================================
-Step 3: Experiment 2 — Separation of Two Clusters (FIXED)
+Experiment 2 — Separation of Two Clusters
 Sharp optimal recovery in the two-component Gaussian Mixture
 =============================================================
 """
 
-def clustering_accuracy(labels_pred, labels_true):
+def clustering_accuracy(labels_pred, labels_true, K=2):
     """
-    Robust accuracy calculation.
-    Finds the two largest clusters and matches them to the true labels,
-    ignoring numeric noise/outliers.
+    Accuracy via optimal label permutation over the K largest predicted clusters.
+    Returns 0.5 (random-guess baseline) when fewer than K clusters are found.
     """
-    unique, counts = np.unique(labels_pred, return_counts=True)
-    if len(unique) == 1:
-        return 0.5  # Everything merged -> random guess
-        
-    # Pick the two most frequent labels (main clusters)
-    sorted_idx = np.argsort(-counts)
-    c1, c2 = unique[sorted_idx[0]], unique[sorted_idx[1]]
-    
-    # Check both permutations for the assignment
-    acc1 = np.sum((labels_pred == c1) & (labels_true == 0)) + \
-           np.sum((labels_pred == c2) & (labels_true == 1))
-    acc2 = np.sum((labels_pred == c1) & (labels_true == 1)) + \
-           np.sum((labels_pred == c2) & (labels_true == 0))
-           
-    return max(acc1, acc2) / len(labels_true)
+    best = 0.0
+    unique = np.unique(labels_pred)
+    if len(unique) < K:
+        return 0.5
+    for perm in permutations(unique[:K]):
+        mapping = {perm[k]: k for k in range(K)}
+        mapped = np.array([mapping.get(l, -1) for l in labels_pred])
+        acc = np.mean(mapped == labels_true)
+        best = max(best, acc)
+    return best
 
 def generate_two_clusters(n, d, r, seed=None):
     rng = np.random.default_rng(seed)
@@ -297,65 +332,37 @@ print("Experiment 2 complete! Graph saved.")
 
 """
 =============================================================
-Step 4: Experiment 3 — Heterogeneous Clusters
-Implementing Locally Adaptive Beta Matrix (Structure Adaptive)
+Experiment 3 — Heterogeneous Clusters
+Locally Adaptive Beta Matrix (Structure Adaptive)
 =============================================================
 """
 
-from scipy.spatial import cKDTree
-import matplotlib.cm as cm
-
-# 1. Update Core Functions to support Beta Matrix
-def gradient_i(Y, X, i, M, beta):
-    """Updated to support both scalar beta and beta matrix."""
-    n = len(Y)
-    diff = X[i] - X
-    d2 = np.einsum("ij,ij->i", diff, diff)
-    
-    # Check if beta is a matrix, otherwise use it as scalar
-    b = beta[i] if isinstance(beta, np.ndarray) else beta
-        
-    w = np.exp(-0.5 * b * d2) * (1.0 - 0.5 * b * d2)
-    w[i] = 0.0  
-    
-    grad_fidelity = 2.0 * (X[i] - Y[i])
-    grad_gravitation = (4.0 * M / n) * np.sum(w[:, None] * diff, axis=0)
-    return grad_fidelity + grad_gravitation
-
-# Re-declare the optimizer so it uses the updated gradient_i internally
-def greedy_coordinate_descent(Y, M, beta, n_iter=30, max_inner_iter=2, seed=None):
-    rng = np.random.default_rng(seed)
-    n, d = Y.shape
-    X = Y.copy()
-    lr = 1.0 / (2.0 + 4.0 * M)  # Theoretical max stable step size
-
-    for _ in range(n_iter):
-        order = rng.permutation(n)
-        for i in order:
-            for _ in range(max_inner_iter):
-                g = gradient_i(Y, X, i, M, beta)
-                if np.linalg.norm(g) < 1e-4:
-                    break
-                X[i] = X[i] - lr * g
-    return X
-
 # 2. Local Density Estimation Procedure
-def compute_adaptive_beta(Y, k=7, C=0.5):
+def compute_adaptive_beta(Y, k=7, C=0.5, beta_max=10.0):
     """
-    Computes structure-adaptive beta matrix using k-Nearest Neighbors.
-    Dense regions get high beta, sparse regions get low beta.
+    Structure-adaptive bandwidth matrix using k-Nearest Neighbours.
+
+    Dense regions get high β (fine-grained attraction scale),
+    sparse regions get low β (coarse-grained scale).
+
+    The symmetric pair bandwidth is β_ij = √(βᵢ · βⱼ) (geometric mean),
+    which is precomputed as an (n, n) matrix for efficiency.
+
+    Parameters
+    ----------
+    k       : int   – number of nearest neighbours for local scale estimate
+    C       : float – scaling constant; βᵢ = C / r_k(i)²
+    beta_max: float – upper clip to prevent extreme values in very dense regions
     """
     tree = cKDTree(Y)
-    dists, _ = tree.query(Y, k=k+1)
-    
-    r_k = dists[:, -1] # Distance to the k-th neighbor
-    r_k = np.clip(r_k, 1e-3, None) # Avoid division by zero
-    
-    # Local scale parameter
-    beta_i = C / (r_k**2)
-    
-    # Symmetrize to build the beta_ij matrix
-    beta_ij = np.sqrt(beta_i[:, None] * beta_i[None, :])
+    dists, _ = tree.query(Y, k=k + 1)
+
+    r_k = dists[:, -1]                           # distance to k-th neighbour
+    r_k = np.clip(r_k, 1e-3, None)               # avoid division by zero
+
+    beta_i = np.clip(C / (r_k ** 2), None, beta_max)  # per-point bandwidth
+
+    beta_ij = np.sqrt(beta_i[:, None] * beta_i[None, :])   # symmetric (n, n)
     return beta_ij
 
 # -----------------------------------------------------------
@@ -433,43 +440,10 @@ print("Experiment 3 complete! Graph saved to outputs/exp3_adaptive.png")
 
 """
 =============================================================
-Step 5: Comparison with Ndaoud (2020) Theoretical Bound
+Experiment 4 — Comparison with Ndaoud (2020) Theoretical Bound
 Evaluating Sharp Optimal Recovery Limit in High Dimensions
 =============================================================
 """
-
-import os
-import numpy as np
-import matplotlib.pyplot as plt
-from sklearn.cluster import KMeans
-from itertools import permutations
-import warnings
-warnings.filterwarnings("ignore")
-
-OUTPUT_DIR = "outputs"
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-
-# -----------------------------------------------------------
-# Strict White Scientific Plotting Style
-# -----------------------------------------------------------
-plt.style.use('default')
-plt.rcParams.update({
-    "figure.facecolor": "#ffffff",
-    "axes.facecolor":   "#ffffff",
-    "axes.edgecolor":   "#000000",
-    "axes.labelcolor":  "#000000",
-    "xtick.color":      "#000000",
-    "ytick.color":      "#000000",
-    "text.color":       "#000000",
-    "grid.color":       "#d3d3d3",
-    "grid.linewidth":   0.6,
-    "grid.linestyle":   "--",
-    "axes.titlecolor":  "#000000",
-    "font.family":      "sans-serif",
-    "legend.facecolor": "#ffffff",
-    "legend.edgecolor": "#000000",
-    "legend.framealpha": 1.0
-})
 
 # -----------------------------------------------------------
 # Theoretical Bound from Ndaoud (2020)
@@ -487,52 +461,33 @@ def r_opt_ndaoud(n, d):
 # -----------------------------------------------------------
 # Experiment Utilities
 # -----------------------------------------------------------
-def clustering_accuracy(labels_pred, labels_true, K=2):
-    best = 0.0
-    unique = np.unique(labels_pred)
-    if len(unique) < K: return 0.5
-    for perm in permutations(unique[:K]):
-        mapping = {perm[k]: k for k in range(K)}
-        mapped = np.array([mapping.get(l, -1) for l in labels_pred])
-        acc = np.mean(mapped == labels_true)
-        best = max(best, acc)
-    return best
-
 def is_exact_recovery(n, d, r, M, beta, trials=10):
     """
-    STRICT Exact Recovery: Demands 100% accuracy (0 errors).
+    Strict exact recovery: returns True iff ≥ 80 % of trials achieve
+    100 % classification accuracy (zero misclassifications).
+
+    Uses greedy_coordinate_descent for optimisation then K-Means to
+    assign final cluster labels.
     """
     successes = 0
     for seed in range(trials):
-        rng = np.random.default_rng(seed + d * int(r*100))
+        rng = np.random.default_rng(seed + d * int(r * 100))
         n1 = n // 2
         n2 = n - n1
         Y1 = rng.standard_normal((n1, d))
         a = np.zeros(d); a[0] = r
         Y2 = rng.standard_normal((n2, d)) + a
         Y = np.vstack([Y1, Y2])
-        labels_true = np.array([0] * n1 +[1] * n2)
-        
-        X = Y.copy()
-        lr = 1.0 / (2.0 + 4.0 * M)
-        # Увеличим число итераций до 50 для гарантии полного стягивания
-        for _ in range(50):
-            order = rng.permutation(n)
-            for i in order:
-                diff = X[i] - X
-                d2 = np.einsum("ij,ij->i", diff, diff)
-                w = np.exp(-0.5 * beta * d2) * (1.0 - 0.5 * beta * d2)
-                w[i] = 0.0  
-                g = 2.0 * (X[i] - Y[i]) + (4.0 * M / n) * np.sum(w[:, None] * diff, axis=0)
-                X[i] = X[i] - lr * g
-                
+        labels_true = np.array([0] * n1 + [1] * n2)
+
+        X = greedy_coordinate_descent(Y, M, beta, n_iter=50, seed=seed)
+
         kmeans = KMeans(n_clusters=2, n_init=3, random_state=seed).fit(X)
         acc = clustering_accuracy(kmeans.labels_, labels_true)
-        
-        # СТРОГО 0 ОШИБОК
-        if acc == 1.0: 
+
+        if acc == 1.0:
             successes += 1
-            
+
     return (successes / trials) >= 0.8
 
 def find_empirical_rmin(n, d, M, beta):
