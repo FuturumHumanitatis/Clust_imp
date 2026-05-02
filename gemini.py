@@ -230,10 +230,12 @@ def clustering_accuracy(labels_pred, labels_true, K=2):
     Returns 0.5 (random-guess baseline) when fewer than K clusters are found.
     """
     best = 0.0
-    unique = np.unique(labels_pred)
+    unique, counts = np.unique(labels_pred, return_counts=True)
     if len(unique) < K:
         return 0.5
-    for perm in permutations(unique[:K]):
+    # Sort by cluster size descending and take the K largest clusters
+    top_k = unique[np.argsort(-counts)][:K]
+    for perm in permutations(top_k):
         mapping = {perm[k]: k for k in range(K)}
         mapped = np.array([mapping.get(l, -1) for l in labels_pred])
         acc = np.mean(mapped == labels_true)
@@ -360,7 +362,7 @@ def compute_adaptive_beta(Y, k=7, C=0.5, beta_max=10.0):
     r_k = dists[:, -1]                           # distance to k-th neighbour
     r_k = np.clip(r_k, 1e-3, None)               # avoid division by zero
 
-    beta_i = np.clip(C / (r_k ** 2), None, beta_max)  # per-point bandwidth
+    beta_i = np.clip(C / (r_k ** 2), 1e-4, beta_max)  # per-point bandwidth
 
     beta_ij = np.sqrt(beta_i[:, None] * beta_i[None, :])   # symmetric (n, n)
     return beta_ij
