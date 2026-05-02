@@ -1,0 +1,261 @@
+% ============================================================
+% Experiments section for the gravitational clustering paper.
+%
+% Compile the standalone version with:
+%   pdflatex experiments.tex
+%
+% Or include in a larger document with:
+%   \input{experiments}
+%
+% Required packages (add to the main preamble if using \input):
+%   \usepackage{graphicx}
+%   \usepackage{amsmath, amssymb}
+%   \usepackage{booktabs}
+%   \usepackage{subcaption}   % for subfigure / subcaptionbox
+%   \usepackage{hyperref}
+% ============================================================
+
+\documentclass[11pt, a4paper]{article}
+
+\usepackage{graphicx}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage[margin=2.5cm]{geometry}
+
+% Path to the generated figures (change if the tex and outputs/ live in
+% different directories)
+\graphicspath{{outputs/}}
+
+\begin{document}
+
+% ============================================================
+\section{Experiments}
+\label{sec:experiments}
+% ============================================================
+
+All experiments were carried out in Python\,3 using NumPy and
+scikit-learn.  Unless stated otherwise, data are drawn from a standard
+normal distribution in $\mathbb{R}^d$.  The algorithm minimises the
+objective
+\begin{equation}
+  \label{eq:objective}
+  F(X) \;=\;
+  \sum_{i=1}^n \|x_i - y_i\|^2
+  \;+\;
+  \frac{2M}{n}
+  \sum_{i \neq j}
+  \|x_i - x_j\|^2 \,
+  e^{-\tfrac{\beta}{2}\|x_i - x_j\|^2},
+\end{equation}
+via greedy coordinate descent with the analytically derived step size
+$\eta = 1/(2 + 4M)$, which is derived from the Lipschitz constant of
+$\nabla_{x_i} F$.  The gravitational kernel
+$w(t) = e^{-t}(1-t)$, $t = \tfrac{\beta}{2}\|x_i - x_j\|^2$, is
+\emph{attractive} for $t < 1$ and \emph{repulsive} for $t > 1$,
+creating a natural cluster scale $\sqrt{2/\beta}$.
+
+% ------------------------------------------------------------
+\subsection{Experiment~1: Calibration of the Penalty Parameter $M$}
+\label{sec:exp1}
+% ------------------------------------------------------------
+
+\paragraph{Setup.}
+We fix the dimensionality at $d = 2$ and vary the sample size
+$n \in \{20, 40, 60, 80\}$, then fix $n = 40$ and vary
+$d \in \{2, 3, 4, 5\}$.  For each configuration $(n, d, \beta)$ we
+use binary search (8~iterations, starting bracket $[0, 50]$) to find
+the minimal penalty $M_{\min}$ such that all points collapse to a
+single cluster after 20 gradient steps (collapse criterion: at least
+95\% of points within an $\varepsilon = 0.1$ neighbourhood).
+
+\paragraph{Repulsion check.}
+If $\beta \cdot 2d > 2.5$ the kernel is entirely repulsive at the
+typical inter-point scale and $M_{\min}$ is reported as $\mathrm{NaN}$.
+
+\paragraph{Results.}
+Figure~\ref{fig:exp1} shows that $M_{\min}$ grows roughly linearly
+with $n$ (left panel) and increases with $d$ (right panel), while
+smaller bandwidth $\beta$ consistently requires a larger penalty to
+overcome the coarser attraction range.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{exp1_calibration}
+  \caption{%
+    \textbf{Experiment~1: Calibration of $M_{\min}$.}
+    \emph{Left:} minimal penalty $M_{\min}$ required for full cluster
+    collapse as a function of sample size $n$ (fixed $d=2$).
+    \emph{Right:} dependence on dimensionality $d$ (fixed $n=40$).
+    Three bandwidth values $\beta \in \{0.05, 0.10, 0.20\}$ are shown.
+    Points marked as $\mathrm{NaN}$ are omitted (repulsive regime).%
+  }
+  \label{fig:exp1}
+\end{figure}
+
+% ------------------------------------------------------------
+\subsection{Experiment~2: Sharp Phase Transition in Two-Cluster
+  Separation}
+\label{sec:exp2}
+% ------------------------------------------------------------
+
+\paragraph{Setup.}
+We consider a two-component Gaussian mixture
+\begin{equation}
+  \label{eq:gmm}
+  Y_1 \sim \mathcal{N}(0, I_d), \qquad
+  Y_2 \sim \mathcal{N}(r\, e_1, I_d),
+\end{equation}
+with $n = 100$, $d = 2$, $\beta = 0.1$, $M = 3$.
+The separation distance $r$ is swept over
+$r \in [1, 7]$ (25 equally spaced values); accuracy is averaged over
+three random seeds.  We also visualise the converged point
+configurations for $r \in \{2, 4, 6\}$.
+
+\paragraph{Accuracy metric.}
+Predicted labels are matched to ground-truth labels via optimal
+permutation of the two largest clusters (Hungarian-style over $K=2$).
+
+\paragraph{Results.}
+Figure~\ref{fig:exp2} displays a sharp phase transition: below the
+critical separation (approximately $r \approx 3.5$--$4.0$) the
+algorithm merges both clusters, while above it exact recovery is
+achieved.  The scatter plots (top row) confirm that for small $r$ the
+two point clouds are dragged into a single mass, whereas for large $r$
+each cluster collapses independently to its centroid.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{exp2_separation}
+  \caption{%
+    \textbf{Experiment~2: Phase transition in two-cluster separation}
+    ($n=100$, $d=2$, $\beta=0.1$, $M=3$).
+    \emph{Top row:} converged configurations for separation distances
+    $r \in \{2, 4, 6\}$.
+    Faint dots — original data; solid diamonds — optimised positions;
+    grey lines — displacement trajectories.
+    \emph{Bottom:} clustering accuracy as a function of $r$.
+    The dashed grey line marks the random-guess baseline (accuracy~$= 0.5$)
+    and the dashed green line marks perfect recovery (accuracy~$= 1.0$).%
+  }
+  \label{fig:exp2}
+\end{figure}
+
+% ------------------------------------------------------------
+\subsection{Experiment~3: Heterogeneous Clusters and the Need for
+  Adaptive $\beta_{ij}$}
+\label{sec:exp3}
+% ------------------------------------------------------------
+
+\paragraph{Setup.}
+We generate a mixture of a \emph{dense} cluster
+($n_1 = 50$, $\sigma_1 = 0.2$, centred at the origin) and a
+\emph{sparse} cluster ($n_2 = 150$, $\sigma_2 = 1.2$, centred at
+$(3.5, 0)$).  Three strategies are compared:
+\begin{enumerate}
+  \item \textbf{Strategy~A (global small $\beta = 0.03$):}
+    the large attraction range absorbs everything into one cluster.
+  \item \textbf{Strategy~B (global large $\beta = 0.80$):}
+    the fine attraction scale fragments the sparse cluster.
+  \item \textbf{Strategy~C (adaptive $\beta_{ij}$ matrix):}
+    a symmetric bandwidth matrix is estimated from the $k$-NN
+    local scale,
+    \begin{equation}
+      \label{eq:adaptive_beta}
+      \beta_i = \frac{C}{r_k(i)^2}, \qquad
+      \beta_{ij} = \sqrt{\beta_i\, \beta_j},
+    \end{equation}
+    where $r_k(i)$ is the distance to the $k$-th nearest neighbour
+    of point $i$, $C = 0.3$, $k = 10$.
+    The values are clipped to $[\beta_{\min}, \beta_{\max}] =
+    [10^{-4}, 10]$ to prevent numerical issues.
+\end{enumerate}
+All three strategies use $M = 5$ and 80 gradient steps.
+
+\paragraph{Results.}
+Figure~\ref{fig:exp3} shows that only Strategy~C correctly identifies
+both clusters; global bandwidth choices fail in qualitatively different
+ways.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\textwidth]{exp3_adaptive}
+  \caption{%
+    \textbf{Experiment~3: Heterogeneous clusters ($n=200$, $d=2$,
+    $M=5$).}
+    Grey dots — original data; coloured circles — optimised positions
+    coloured by predicted cluster label.
+    \emph{Left (Strategy~A, $\beta=0.03$):} large attraction range
+    merges both clusters into one.
+    \emph{Centre (Strategy~B, $\beta=0.80$):} fine attraction range
+    fragments the sparse cluster.
+    \emph{Right (Strategy~C, adaptive $\beta_{ij}$):} locally
+    adaptive bandwidth correctly recovers both clusters.%
+  }
+  \label{fig:exp3}
+\end{figure}
+
+% ------------------------------------------------------------
+\subsection{Experiment~4: Comparison with the Ndaoud~(2020)
+  Information-Theoretic Bound}
+\label{sec:exp4}
+% ------------------------------------------------------------
+
+\paragraph{Theoretical bound.}
+Ndaoud~\cite{ndaoud2020} derived the sharp minimax optimal separation
+distance for two balanced Gaussian clusters with $\sigma = 1$:
+\begin{equation}
+  \label{eq:ndaoud}
+  r_{\mathrm{opt}}(n, d)
+  \;=\;
+  2\sqrt{\bar{\Delta}^2}, \qquad
+  \bar{\Delta}^2
+  = \Bigl(1 + \sqrt{1 + \tfrac{2d}{n\ln n}}\Bigr)\ln n.
+\end{equation}
+
+\paragraph{Setup.}
+We fix $n = 300$ and vary $d \in \{2, 5, 10, 20, 30, 40\}$.  For each
+dimension we set $\beta = 1/d$ (to keep the attraction scale from
+shrinking too fast) and $M = 5$.  The empirical minimum separation
+$r_{\min}$ is found by binary search (6 steps, bracketed around
+$[0.2\,r_{\mathrm{opt}}, 2.5\,r_{\mathrm{opt}}]$), using a strict
+exact-recovery criterion: at least 80\% of 10 independent trials must
+achieve 100\% classification accuracy.
+
+\paragraph{Results.}
+Figure~\ref{fig:exp4} shows that the empirical $r_{\min}$ of the
+gravitational algorithm closely tracks the theoretical optimal bound
+$r_{\mathrm{opt}}$ across all tested dimensions.  The red-shaded area
+between the two curves represents the sub-optimality gap of the
+proposed algorithm relative to the information-theoretic limit.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=0.82\textwidth]{exp4_ndaoud_comparison}
+  \caption{%
+    \textbf{Experiment~4: Comparison with the Ndaoud~(2020)
+    information-theoretic lower bound.}
+    ($n=300$, $M=5$, $\beta = 1/d$.)
+    Dashed black line — theoretical optimal separation $r_{\mathrm{opt}}$
+    \eqref{eq:ndaoud}.
+    Solid red line — empirical minimal separation $r_{\min}$ of the
+    gravitational algorithm.
+    Red-shaded region — sub-optimality gap.%
+  }
+  \label{fig:exp4}
+\end{figure}
+
+% ============================================================
+% Bibliography (add to the main .bib file when using \input)
+% ============================================================
+\begin{thebibliography}{9}
+
+\bibitem{ndaoud2020}
+  M.~Ndaoud,
+  \textit{Sharp optimal recovery in the two component Gaussian mixture model},
+  arXiv:2010.04705, 2020.
+
+\end{thebibliography}
+
+\end{document}
